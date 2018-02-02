@@ -106,6 +106,9 @@ func (maker *ChunkMaker) ForEachChunk(reader io.Reader, endOfChunk func(chunk *C
 	fileSize := int64(0)
 	fileHasher := maker.config.NewFileHasher()
 
+	winsize := int(255)
+	LOG_INFO("CHUNK_MAKER", "Rolling hash window size: %d bytes", winsize)
+
 	// Start a new chunk.
 	startNewChunk := func() {
 		hashSum = 0
@@ -234,14 +237,15 @@ func (maker *ChunkMaker) ForEachChunk(reader io.Reader, endOfChunk func(chunk *C
 
 			bytes := maker.minimumChunkSize
 
-			if maker.bufferStart+bytes < maker.bufferCapacity {
-				hashSum = maker.buzhashSum(0, maker.buffer[maker.bufferStart:maker.bufferStart+bytes])
+			hashFrom := (maker.bufferStart+bytes-winsize) % maker.bufferCapacity
+			hashTo := (maker.bufferStart+bytes) % maker.bufferCapacity
+			if hashFrom < hashTo {
+				hashSum = maker.buzhashSum(0, maker.buffer[hashFrom:hashTo])
 			} else {
-				hashSum = maker.buzhashSum(0, maker.buffer[maker.bufferStart:])
-				hashSum = maker.buzhashSum(hashSum,
-					maker.buffer[:bytes-(maker.bufferCapacity-maker.bufferStart)])
+				hashSum = maker.buzhashSum(0, maker.buffer[hashFrom:]);
+				hashSum = maker.buzhashSum(hashSum, maker.buffer[:hashTo]);
 			}
-
+	
 			if (hashSum & maker.hashMask) == 0 {
 				// This is a minimum size chunk
 				fill(bytes)
@@ -258,7 +262,7 @@ func (maker *ChunkMaker) ForEachChunk(reader io.Reader, endOfChunk func(chunk *C
 		isEOC := false
 		maxSize := maker.maximumChunkSize - chunk.GetLength()
 		for i := 0; i < maker.bufferSize-maker.minimumChunkSize; i++ {
-			out := maker.bufferStart + i
+			out := maker.bufferStart + i + maker.minimumChunkSize - winsize
 			if out >= maker.bufferCapacity {
 				out -= maker.bufferCapacity
 			}
@@ -267,7 +271,7 @@ func (maker *ChunkMaker) ForEachChunk(reader io.Reader, endOfChunk func(chunk *C
 				in -= maker.bufferCapacity
 			}
 
-			hashSum = maker.buzhashUpdate(hashSum, maker.buffer[out], maker.buffer[in], maker.minimumChunkSize)
+			hashSum = maker.buzhashUpdate(hashSum, maker.buffer[out], maker.buffer[in], winsize)
 			if (hashSum&maker.hashMask) == 0 || i == maxSize-maker.minimumChunkSize-1 {
 				// A chunk is completed.
 				bytes = i + 1 + maker.minimumChunkSize
