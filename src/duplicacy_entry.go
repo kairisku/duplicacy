@@ -33,6 +33,7 @@ type Entry struct {
 	Mode uint32
 	Link string
 	Hash string
+	Pass int
 
 	UID int
 	GID int
