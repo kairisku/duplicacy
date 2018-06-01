@@ -71,6 +71,10 @@ func getRepositoryPreference(context *cli.Context, storageName string) (reposito
 	}
 
 	if storageName == "" {
+		if duplicacy.Preferences[0].RepositoryPath != "" {
+			repository = duplicacy.Preferences[0].RepositoryPath
+			duplicacy.LOG_INFO("REPOSITORY_SET", "Repository set to %s", repository)
+		}
 		return repository, &duplicacy.Preferences[0]
 	}
 
@@ -80,6 +84,12 @@ func getRepositoryPreference(context *cli.Context, storageName string) (reposito
 		duplicacy.LOG_ERROR("STORAGE_NONE", "No storage named '%s' is found", storageName)
 		return "", nil
 	}
+
+	if preference.RepositoryPath != "" {
+		repository = preference.RepositoryPath
+		duplicacy.LOG_INFO("REPOSITORY_SET", "Repository set to %s", repository)
+	}
+
 	return repository, preference
 }
 
@@ -293,9 +303,14 @@ func configRepository(context *cli.Context, init bool) {
 		}
 	}
 
+	repositoryPath := ""
+	if context.String("repository") != "" {
+		repositoryPath = context.String("repository")
+	}
 	preference := duplicacy.Preference{
 		Name:       storageName,
 		SnapshotID: snapshotID,
+		RepositoryPath: repositoryPath,
 		StorageURL: storageURL,
 		Encrypted:  context.Bool("encrypt"),
 	}
@@ -427,8 +442,12 @@ func configRepository(context *cli.Context, init bool) {
 
 	duplicacy.SavePreferences()
 
+	if repositoryPath == "" {
+		repositoryPath = repository
+	}
+
 	duplicacy.LOG_INFO("REPOSITORY_INIT", "%s will be backed up to %s with id %s",
-		repository, preference.StorageURL, preference.SnapshotID)
+		repositoryPath, preference.StorageURL, preference.SnapshotID)
 }
 
 type TriBool struct {
@@ -513,6 +532,8 @@ func setPreference(context *cli.Context) {
 	if triBool.IsSet() {
 		newPreference.DoNotSavePassword = triBool.IsTrue()
 	}
+	
+	newPreference.NobackupFile = context.String("nobackup-file")
 
 	key := context.String("key")
 	value := context.String("value")
@@ -693,13 +714,14 @@ func backupRepository(context *cli.Context) {
 
 	dryRun := context.Bool("dry-run")
 	uploadRateLimit := context.Int("limit-rate")
+	enumOnly := context.Bool("enum-only")
 	storage.SetRateLimits(0, uploadRateLimit)
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	backupManager.SetupSnapshotCache(preference.Name)
 	backupManager.SetDryRun(dryRun)
-	backupManager.Backup(repository, quickMode, threads, context.String("t"), showStatistics, enableVSS, vssTimeout)
+	backupManager.Backup(repository, quickMode, threads, context.String("t"), showStatistics, enableVSS, vssTimeout, enumOnly)
 
 	runScript(context, preference.Name, "post")
 }
@@ -783,7 +805,7 @@ func restoreRepository(context *cli.Context) {
 	duplicacy.LOG_DEBUG("REGEX_DEBUG", "There are %d compiled regular expressions stored", len(duplicacy.RegexMap))
 
 	storage.SetRateLimits(context.Int("limit-rate"), 0)
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	backupManager.SetupSnapshotCache(preference.Name)
@@ -823,7 +845,7 @@ func listSnapshots(context *cli.Context) {
 	tag := context.String("t")
 	revisions := getRevisions(context)
 
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	id := preference.SnapshotID
@@ -871,7 +893,7 @@ func checkSnapshots(context *cli.Context) {
 	tag := context.String("t")
 	revisions := getRevisions(context)
 
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	id := preference.SnapshotID
@@ -926,7 +948,7 @@ func printFile(context *cli.Context) {
 		snapshotID = context.String("id")
 	}
 
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	backupManager.SetupSnapshotCache(preference.Name)
@@ -982,11 +1004,11 @@ func diff(context *cli.Context) {
 	}
 
 	compareByHash := context.Bool("hash")
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	backupManager.SetupSnapshotCache(preference.Name)
-	backupManager.SnapshotManager.Diff(repository, snapshotID, revisions, path, compareByHash)
+	backupManager.SnapshotManager.Diff(repository, snapshotID, revisions, path, compareByHash, preference.NobackupFile)
 
 	runScript(context, preference.Name, "post")
 }
@@ -1025,7 +1047,7 @@ func showHistory(context *cli.Context) {
 
 	revisions := getRevisions(context)
 	showLocalHash := context.Bool("hash")
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	backupManager.SetupSnapshotCache(preference.Name)
@@ -1083,7 +1105,7 @@ func pruneSnapshots(context *cli.Context) {
 		os.Exit(ArgumentExitCode)
 	}
 
-	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password)
+	backupManager := duplicacy.CreateBackupManager(preference.SnapshotID, storage, repository, password, preference.NobackupFile)
 	duplicacy.SavePassword(*preference, "password", password)
 
 	backupManager.SetupSnapshotCache(preference.Name)
@@ -1123,7 +1145,7 @@ func copySnapshots(context *cli.Context) {
 		sourcePassword = duplicacy.GetPassword(*source, "password", "Enter source storage password:", false, false)
 	}
 
-	sourceManager := duplicacy.CreateBackupManager(source.SnapshotID, sourceStorage, repository, sourcePassword)
+	sourceManager := duplicacy.CreateBackupManager(source.SnapshotID, sourceStorage, repository, sourcePassword, source.NobackupFile)
 	sourceManager.SetupSnapshotCache(source.Name)
 	duplicacy.SavePassword(*source, "password", sourcePassword)
 
@@ -1156,7 +1178,7 @@ func copySnapshots(context *cli.Context) {
 	destinationStorage.SetRateLimits(0, context.Int("upload-limit-rate"))
 
 	destinationManager := duplicacy.CreateBackupManager(destination.SnapshotID, destinationStorage, repository,
-		destinationPassword)
+		destinationPassword, destination.NobackupFile)
 	duplicacy.SavePassword(*destination, "password", destinationPassword)
 	destinationManager.SetupSnapshotCache(destination.Name)
 
@@ -1285,6 +1307,11 @@ func main() {
 					Usage:    "assign a name to the storage",
 					Argument: "<name>",
 				},
+				cli.StringFlag{
+					Name:     "repository",
+					Usage:    "initialize a new repository at the specified path rather than the current working directory",
+					Argument: "<path>",
+				},
 			},
 			Usage:     "Initialize the storage if necessary and the current directory as the repository",
 			ArgsUsage: "<snapshot id> <storage url>",
@@ -1336,6 +1363,10 @@ func main() {
 					Name:     "storage",
 					Usage:    "backup to the specified storage instead of the default one",
 					Argument: "<storage name>",
+				},
+				cli.BoolFlag{
+					Name:  "enum-only",
+					Usage: "enumerate the repository recursively and then exit",
 				},
 			},
 			Usage:     "Save a snapshot of the repository to the storage",
@@ -1689,6 +1720,11 @@ func main() {
 					Name:     "bit-identical",
 					Usage:    "(when using -copy) make the new storage bit-identical to also allow rsync etc.",
 				},
+				cli.StringFlag{
+					Name:     "repository",
+					Usage:    "specify the path of the repository (instead of the current working directory)",
+					Argument: "<path>",
+				},
 			},
 			Usage:     "Add an additional storage to be used for the existing repository",
 			ArgsUsage: "<storage name> <snapshot id> <storage url>",
@@ -1721,6 +1757,12 @@ func main() {
 					Usage: "don't save password or access keys to keychain/keyring",
 					Value: &TriBool{},
 					Arg:   "true",
+				},
+				cli.StringFlag{
+					Name:  "nobackup-file",
+					Usage: "Directories containing a file with this name will not be backed up",
+					Argument: "<file name>",
+					Value:   "",
 				},
 				cli.StringFlag{
 					Name:  "key",
@@ -1778,7 +1820,7 @@ func main() {
 				cli.IntFlag{
 					Name:     "threads",
 					Value:    1,
-					Usage:    "number of downloading threads",
+					Usage:    "number of uploading threads",
 					Argument: "<n>",
 				},
 			},
@@ -1846,7 +1888,11 @@ func main() {
 			Usage:    "enable the profiling tool and listen on the specified address:port",
 			Argument: "<address:port>",
 		},
-}
+		cli.StringFlag{
+			Name:	"comment",
+			Usage:	"add a comment to identify the process",
+		},
+	}
 
 	app.HideVersion = true
 	app.Name = "duplicacy"

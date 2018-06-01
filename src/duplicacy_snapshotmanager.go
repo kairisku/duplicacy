@@ -1240,7 +1240,7 @@ func (manager *SnapshotManager) PrintFile(snapshotID string, revision int, path 
 
 // Diff compares two snapshots, or two revision of a file if the file argument is given.
 func (manager *SnapshotManager) Diff(top string, snapshotID string, revisions []int,
-	filePath string, compareByHash bool) bool {
+	filePath string, compareByHash bool, nobackupFile string) bool {
 
 	LOG_DEBUG("DIFF_PARAMETERS", "top: %s, id: %s, revision: %v, path: %s, compareByHash: %t",
 		top, snapshotID, revisions, filePath, compareByHash)
@@ -1253,7 +1253,7 @@ func (manager *SnapshotManager) Diff(top string, snapshotID string, revisions []
 	if len(revisions) <= 1 {
 		// Only scan the repository if filePath is not provided
 		if len(filePath) == 0 {
-			rightSnapshot, _, _, err = CreateSnapshotFromDirectory(snapshotID, top)
+			rightSnapshot, _, _, err = CreateSnapshotFromDirectory(snapshotID, top, nobackupFile)
 			if err != nil {
 				LOG_ERROR("SNAPSHOT_LIST", "Failed to list the directory %s: %v", top, err)
 				return false
@@ -1490,7 +1490,7 @@ func (manager *SnapshotManager) ShowHistory(top string, snapshotID string, revis
 		}
 		if showLocalHash {
 			localFile.Hash = manager.config.ComputeFileHash(joinPath(top, filePath), make([]byte, 32*1024))
-			if lastVersion.Hash != localFile.Hash {
+			if lastVersion == nil || lastVersion.Hash != localFile.Hash {
 				modifiedFlag = "*"
 			}
 		}
@@ -2184,13 +2184,9 @@ func (manager *SnapshotManager) pruneSnapshotsExhaustive(referencedFossils map[s
 				if _, found := referencedChunks[chunk]; found {
 					manager.resurrectChunk(chunkDir+file, chunk)
 				} else {
-					err := manager.storage.DeleteFile(0, chunkDir+file)
-					if err != nil {
-						LOG_WARN("FOSSIL_DELETE", "Failed to remove the unreferenced fossil %s: %v", file, err)
-					} else {
-						LOG_DEBUG("FOSSIL_DELETE", "Deleted unreferenced fossil %s", file)
-						fmt.Fprintf(logFile, "Deleted unreferenced fossil %s\n", file)
-					}
+					collection.AddFossil(chunkDir + file)
+					LOG_DEBUG("FOSSIL_FIND", "Found unreferenced fossil %s", file)
+					fmt.Fprintf(logFile, "Found unreferenced fossil %s\n", file)
 				}
 			}
 
