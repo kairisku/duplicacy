@@ -17,11 +17,13 @@ import (
 type Preference struct {
 	Name              string            `json:"name"`
 	SnapshotID        string            `json:"id"`
+	RepositoryPath    string            `json:"repository"`
 	StorageURL        string            `json:"storage"`
 	Encrypted         bool              `json:"encrypted"`
 	BackupProhibited  bool              `json:"no_backup"`
 	RestoreProhibited bool              `json:"no_restore"`
 	DoNotSavePassword bool              `json:"no_save_password"`
+	NobackupFile      string            `json:"nobackup_file"`
 	Keys              map[string]string `json:"keys"`
 }
 
