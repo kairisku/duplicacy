@@ -9,6 +9,7 @@ package duplicacy
 import (
 	"bytes"
 	"os"
+	"path"
 	"path/filepath"
 	"syscall"
 
@@ -35,7 +36,7 @@ func SetOwner(fullPath string, entry *Entry, fileInfo *os.FileInfo) bool {
 	stat, ok := (*fileInfo).Sys().(*syscall.Stat_t)
 	if ok && stat != nil && (int(stat.Uid) != entry.UID || int(stat.Gid) != entry.GID) {
 		if entry.UID != -1 && entry.GID != -1 {
-			err := os.Chown(fullPath, entry.UID, entry.GID)
+			err := os.Lchown(fullPath, entry.UID, entry.GID)
 			if err != nil {
 				LOG_ERROR("RESTORE_CHOWN", "Failed to change uid or gid: %v", err)
 				return false
@@ -82,4 +83,8 @@ func (entry *Entry) SetAttributesToFile(fullPath string) {
 		xattr.Setxattr(fullPath, name, attribute)
 	}
 
+}
+
+func joinPath(components ...string) string {
+	return path.Join(components...)
 }

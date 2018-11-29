@@ -22,6 +22,9 @@ import (
 var DUPLICACY_DIRECTORY = ".duplicacy"
 var DUPLICACY_FILE = ".duplicacy"
 
+// Mask for file permission bits
+var fileModeMask = os.ModePerm | os.ModeSetuid | os.ModeSetgid | os.ModeSticky
+
 // Regex for matching 'StartChunk:StartOffset:EndChunk:EndOffset'
 var contentRegex = regexp.MustCompile(`^([0-9]+):([0-9]+):([0-9]+):([0-9]+)`)
 
@@ -269,7 +272,7 @@ func (entry *Entry) IsLink() bool {
 }
 
 func (entry *Entry) GetPermissions() os.FileMode {
-	return os.FileMode(entry.Mode) & os.ModePerm
+	return os.FileMode(entry.Mode)&fileModeMask
 }
 
 func (entry *Entry) IsSameAs(other *Entry) bool {
@@ -289,7 +292,7 @@ func (entry *Entry) String(maxSizeDigits int) string {
 func (entry *Entry) RestoreMetadata(fullPath string, fileInfo *os.FileInfo, setOwner bool) bool {
 
 	if fileInfo == nil {
-		stat, err := os.Stat(fullPath)
+		stat, err := os.Lstat(fullPath)
 		fileInfo = &stat
 		if err != nil {
 			LOG_ERROR("RESTORE_STAT", "Failed to retrieve the file info: %v", err)
@@ -297,7 +300,15 @@ func (entry *Entry) RestoreMetadata(fullPath string, fileInfo *os.FileInfo, setO
 		}
 	}
 
-	if (*fileInfo).Mode()&os.ModePerm != entry.GetPermissions() {
+	// Note that chown can remove setuid/setgid bits so should be called before chmod
+	if setOwner {
+		if !SetOwner(fullPath, entry, fileInfo) {
+			return false
+		}
+	}
+
+	// Only set the permission if the file is not a symlink
+	if !entry.IsLink() && (*fileInfo).Mode() & fileModeMask != entry.GetPermissions() {
 		err := os.Chmod(fullPath, entry.GetPermissions())
 		if err != nil {
 			LOG_ERROR("RESTORE_CHMOD", "Failed to set the file permissions: %v", err)
@@ -305,7 +316,8 @@ func (entry *Entry) RestoreMetadata(fullPath string, fileInfo *os.FileInfo, setO
 		}
 	}
 
-	if (*fileInfo).ModTime().Unix() != entry.Time {
+	// Only set the time if the file is not a symlink
+	if !entry.IsLink() && (*fileInfo).ModTime().Unix() != entry.Time {
 		modifiedTime := time.Unix(entry.Time, 0)
 		err := os.Chtimes(fullPath, modifiedTime, modifiedTime)
 		if err != nil {
@@ -318,11 +330,7 @@ func (entry *Entry) RestoreMetadata(fullPath string, fileInfo *os.FileInfo, setO
 		entry.SetAttributesToFile(fullPath)
 	}
 
-	if setOwner {
-		return SetOwner(fullPath, entry, fileInfo)
-	} else {
-		return true
-	}
+	return true
 }
 
 // Return -1 if 'left' should appear before 'right', 1 if opposite, and 0 if they are the same.

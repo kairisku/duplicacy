@@ -472,7 +472,7 @@ func (manager *BackupManager) Backup(top string, quickMode bool, threads int, ta
 
 			uploadedModifiedFileSize := atomic.AddInt64(&uploadedModifiedFileSize, int64(chunkSize))
 
-			if IsTracing() || showStatistics {
+			if (IsTracing() || showStatistics) && totalModifiedFileSize > 0 {
 				now := time.Now().Unix()
 				if now <= startUploadingTime {
 					now = startUploadingTime + 1
@@ -825,6 +825,7 @@ func (manager *BackupManager) Restore(top string, revision int, inPlace bool, qu
 				if stat.Mode()&os.ModeSymlink != 0 {
 					isRegular, link, err := Readlink(fullPath)
 					if err == nil && link == entry.Link && !isRegular {
+						entry.RestoreMetadata(fullPath, nil, setOwner)
 						continue
 					}
 				}
@@ -837,6 +838,7 @@ func (manager *BackupManager) Restore(top string, revision int, inPlace bool, qu
 				LOG_ERROR("RESTORE_SYMLINK", "Can't create symlink %s: %v", entry.Path, err)
 				return false
 			}
+			entry.RestoreMetadata(fullPath, nil, setOwner)
 			LOG_TRACE("DOWNLOAD_DONE", "Symlink %s updated", entry.Path)
 		} else if entry.IsDir() {
 			stat, err := os.Stat(fullPath)
@@ -1160,6 +1162,9 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 	lengthMap := make(map[string]int)
 	var offset int64
 
+	// If the file is newly created (needed by sparse file optimization)
+	isNewFile := false
+
 	existingFile, err = os.Open(fullPath)
 	if err != nil {
 		if os.IsNotExist(err) {
@@ -1194,6 +1199,7 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 					LOG_ERROR("DOWNLOAD_OPEN", "Can't reopen the initial file just created: %v", err)
 					return false
 				}
+				isNewFile = true
 			}
 		} else {
 			LOG_TRACE("DOWNLOAD_OPEN", "Can't open the existing file: %v", err)
@@ -1206,6 +1212,9 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 		}
 	}
 
+	// The key in this map is the number of zeroes.  The value is the corresponding hash.
+	knownHashes := make(map[int]string)
+
 	fileHash := ""
 	if existingFile != nil {
 
@@ -1215,6 +1224,7 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 			fileHasher := manager.config.NewFileHasher()
 			buffer := make([]byte, 64*1024)
 			err = nil
+			isSkipped := false
 			// We set to read one more byte so the file hash will be different if the file to be restored is a
 			// truncated portion of the existing file
 			for i := entry.StartChunk; i <= entry.EndChunk+1; i++ {
@@ -1230,6 +1240,28 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 					chunkSize = 1 // the size of extra chunk beyond EndChunk
 				}
 				count := 0
+
+				if isNewFile {
+					if hash, found := knownHashes[chunkSize]; found {
+						// We have read the same number of zeros before, so we just retrieve the hash from the map
+						existingChunks = append(existingChunks, hash)
+						existingLengths = append(existingLengths, chunkSize)
+						offsetMap[hash] = offset
+						lengthMap[hash] = chunkSize
+						offset += int64(chunkSize)
+						isSkipped = true
+						continue
+					}
+				}
+
+				if isSkipped {
+					_, err := existingFile.Seek(offset, 0)
+					if err != nil {
+						LOG_ERROR("DOWNLOAD_SEEK", "Failed to seek to offset %d: %v", offset, err)
+					}
+					isSkipped = false
+				}
+
 				for count < chunkSize {
 					n := chunkSize - count
 					if n > cap(buffer) {
@@ -1256,12 +1288,16 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 					offsetMap[hash] = offset
 					lengthMap[hash] = chunkSize
 					offset += int64(chunkSize)
+					if isNewFile {
+						knownHashes[chunkSize] = hash
+					}
 				}
 
 				if err == io.EOF {
 					break
 				}
 			}
+
 			fileHash = hex.EncodeToString(fileHasher.Sum(nil))
 		} else {
 			// If it is not inplace, we want to reuse any chunks in the existing file regardless their offets, so
@@ -1287,6 +1323,7 @@ func (manager *BackupManager) RestoreFile(chunkDownloader *ChunkDownloader, chun
 			return false
 		}
 	}
+
 
 	for i := entry.StartChunk; i <= entry.EndChunk; i++ {
 		if _, found := offsetMap[chunkDownloader.taskList[i].chunkHash]; !found {
